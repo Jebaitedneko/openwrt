@@ -1,0 +1,43 @@
+From 8fb8ef42710bec224ea4cd8940007d6c85268f0a Mon Sep 17 00:00:00 2001
+From: Shubham Chakraborty <chakrabortyshubham66@gmail.com>
+Date: Thu, 2 Apr 2026 20:33:10 +0530
+Subject: [PATCH] Improve EGREP detection in configure script
+
+The ncurses configure script searches for ggrep before grep. To verify
+if a found grep works as an extended grep (EGREP), it currently only
+checks the exit code of the following command:
+  echo a | $GREP -E '\''(a|b)'\'' >/dev/null 2>&1
+
+On systems where a tool or script named 'ggrep' is present in the PATH
+but does not behave like a standard GNU grep (for example, a specialized
+wrapper script that ignores stdin but returns an exit code of 0), the
+configure script incorrectly identifies it as a working EGREP. This
+leads to a failure later in the configuration process (e.g., "Release
+major-version value is empty") because the tool fails to extract
+information from source files like dist.mk.
+
+This patch improves the robustness of the check by verifying that the
+output of the test command matches the expected value, ensuring that
+the selected GREP actually processes input correctly.
+
+Signed-off-by: Shubham Chakraborty <chakrabortyshubham66@gmail.com>
+---
+ configure | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/configure b/configure
+index 48ad381..ea8e4c4 100755
+--- a/configure
++++ b/configure
+@@ -1238,7 +1238,7 @@ echo $ECHO_N "checking for egrep... $ECHO_C" >&6
+ if test "${ac_cv_path_EGREP+set}" = set; then
+   echo $ECHO_N "(cached) $ECHO_C" >&6
+ else
+-  if echo a | $GREP -E '(a|b)' >/dev/null 2>&1
++  if test "`echo a | $GREP -E '(a|b)' 2>/dev/null`" = "a"
+    then ac_cv_path_EGREP="$GREP -E"
+    else
+      for ac_prog in gegrep egrep
+-- 
+2.53.0
+
