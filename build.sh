@@ -1,122 +1,61 @@
 #!/usr/bin/env bash
 set -xeuo pipefail
 
-git reset --hard
 git pull -r
 scripts/feeds update -a
 scripts/feeds install -a
-COMMON_CFLAGS="-O3 -pipe -fno-caller-saves -fno-plt -fno-semantic-interposition -flto-partition=one"
+
+PACKAGES_FROM_FIRMWARE_SELECTOR="apk-mbedtls base-files ca-bundle dnsmasq dropbear firewall4 fitblk fstools kmod-crypto-hw-safexcel kmod-gpio-button-hotplug kmod-leds-gpio kmod-nft-offload libc libgcc libustream-mbedtls logd mtd netifd nftables odhcp6c odhcpd-ipv6only ppp ppp-mod-pppoe procd-ujail uboot-envtools uci uclient-fetch urandom-seed urngd wpad-basic-mbedtls kmod-leds-gca230718 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware luci luci-app-attendedsysupgrade"
+MY_PACKAGES="luci-app-adblock-fast luci-app-sqm btop"
+PACKAGES="$PACKAGES_FROM_FIRMWARE_SELECTOR $MY_PACKAGES"
+
+COMMON_CFLAGS="-O3 -pipe -fno-caller-saves -fno-plt -fno-semantic-interposition -funroll-loops -fgraphite-identity -floop-nest-optimize -fsched-pressure -fipa-pta -flto-partition=one -fno-conserve-stack"
 TUNING_CFLAGS="-mcpu=cortex-a53+crypto+crc -march=armv8-a+crc+crypto -mtune=cortex-a53"
-sed -i "s/CPU_CFLAGS_cortex-a53 = -mcpu=cortex-a53/CPU_CFLAGS_cortex-a53 = $COMMON_CFLAGS $TUNING_CFLAGS/g" include/target.mk
-sed -i "s/default \"-fno-caller-saves -fno-plt\"/default \"$COMMON_CFLAGS $TUNING_CFLAGS\"/g" config/Config-devel.in
-cat <<EOF >> .config
-CONFIG_USE_LTO=y
-CONFIG_USE_GC_SECTIONS=y
+
+cat <<EOF > .config
+# Device
 CONFIG_TARGET_mediatek=y
 CONFIG_TARGET_mediatek_filogic=y
 CONFIG_TARGET_mediatek_filogic_DEVICE_dlink_aquila-pro-ai-m30-a1=y
+
+# Optimizers
+CONFIG_USE_LTO=y
+CONFIG_USE_MOLD=y
+CONFIG_USE_GC_SECTIONS=y
+
+# Devel flags section
+CONFIG_DEVEL=y
+CONFIG_CCACHE=y
+CONFIG_CCACHE_DIR="$CCACHE_DIR"
+CONFIG_OPTIMIZE_HOST_TOOLS=y
+CONFIG_HOST_FLAGS_OPT="-O3 -pipe -fipa-pta"
+CONFIG_HOST_TOOLS_STRIP=y
+CONFIG_HOST_FLAGS_STRIP="-Wl,-s"
+CONFIG_HOST_EXTRA_CFLAGS=""
+CONFIG_HOST_EXTRA_CXXFLAGS=""
+CONFIG_HOST_EXTRA_CPPFLAGS=""
+CONFIG_HOST_EXTRA_LDFLAGS=""
+CONFIG_TOOLCHAINOPTS=y
+CONFIG_GCC_USE_VERSION_15=y
+CONFIG_GCC_USE_GRAPHITE=y
+CONFIG_BINUTILS_USE_VERSION_2_46=y
+CONFIG_TARGET_OPTIONS=y
+CONFIG_EXTRA_OPTIMIZATION="$COMMON_CFLAGS $TUNING_CFLAGS"
+CONFIG_TARGET_OPTIMIZATION="$COMMON_CFLAGS $TUNING_CFLAGS"
+CONFIG_KERNEL_CFLAGS="$COMMON_CFLAGS $TUNING_CFLAGS"
+
+# Experimental flags section
 CONFIG_EXPERIMENTAL=y
-CONFIG_HTOP_LMSENSORS=y
-CONFIG_LIBCURL_COOKIES=y
-CONFIG_LIBCURL_FILE=y
-CONFIG_LIBCURL_FTP=y
-CONFIG_LIBCURL_HTTP=y
-CONFIG_LIBCURL_HTTP2=y
-CONFIG_LIBCURL_HTTP_AUTH=y
-CONFIG_LIBCURL_MBEDTLS=y
-CONFIG_LIBCURL_NO_SMB="!"
-CONFIG_LIBCURL_PROXY=y
-CONFIG_LIBCURL_UNIX_SOCKETS=y
-CONFIG_LINUX_6_18=y
-CONFIG_PACKAGE_adblock-fast=y
-CONFIG_PACKAGE_attendedsysupgrade-common=y
-CONFIG_PACKAGE_bash=y
-CONFIG_PACKAGE_btop=y
-CONFIG_PACKAGE_cgi-io=y
-CONFIG_PACKAGE_coreutils=y
-CONFIG_PACKAGE_coreutils-sort=y
-CONFIG_PACKAGE_curl=y
-CONFIG_PACKAGE_gawk=y
-CONFIG_PACKAGE_grep=y
-CONFIG_PACKAGE_htop=y
-CONFIG_PACKAGE_iftop=y
-CONFIG_PACKAGE_ip-tiny=y
-CONFIG_PACKAGE_ip6tables-mod-nat=y
-CONFIG_PACKAGE_iptables-mod-ipopt=y
-CONFIG_PACKAGE_iptables-nft=y
-CONFIG_PACKAGE_kmod-ifb=y
-CONFIG_PACKAGE_kmod-ip6tables=y
-CONFIG_PACKAGE_kmod-ipt-conntrack=y
-CONFIG_PACKAGE_kmod-ipt-core=y
-CONFIG_PACKAGE_kmod-ipt-ipopt=y
-CONFIG_PACKAGE_kmod-ipt-nat=y
-CONFIG_PACKAGE_kmod-ipt-nat6=y
-CONFIG_PACKAGE_kmod-iptables=y
-CONFIG_PACKAGE_kmod-nf-ipt=y
-CONFIG_PACKAGE_kmod-nf-ipt6=y
-CONFIG_PACKAGE_kmod-nf-nat6=y
-CONFIG_PACKAGE_kmod-nft-compat=y
-CONFIG_PACKAGE_kmod-sched-cake=y
-CONFIG_PACKAGE_kmod-sched-core=y
-CONFIG_PACKAGE_libcurl=y
-CONFIG_PACKAGE_libiptext=y
-CONFIG_PACKAGE_libiptext-nft=y
-CONFIG_PACKAGE_libiptext6=y
-CONFIG_PACKAGE_libiwinfo=y
-CONFIG_PACKAGE_libiwinfo-data=y
-CONFIG_PACKAGE_liblucihttp=y
-CONFIG_PACKAGE_liblucihttp-ucode=y
-CONFIG_PACKAGE_libncurses=y
-CONFIG_PACKAGE_libnghttp2=y
-CONFIG_PACKAGE_libpcap=y
-CONFIG_PACKAGE_libpcre2=y
-CONFIG_PACKAGE_libpthread=y
-CONFIG_PACKAGE_libreadline=y
-CONFIG_PACKAGE_libstdcpp=y
-CONFIG_PACKAGE_libxtables=y
-CONFIG_PACKAGE_luci=y
-CONFIG_PACKAGE_luci-app-adblock-fast=y
-CONFIG_PACKAGE_luci-app-attendedsysupgrade=y
-CONFIG_PACKAGE_luci-app-commands=y
-CONFIG_PACKAGE_luci-app-firewall=y
-CONFIG_PACKAGE_luci-app-package-manager=y
-CONFIG_PACKAGE_luci-app-sqm=y
-CONFIG_PACKAGE_luci-base=y
-CONFIG_PACKAGE_luci-lib-uqr=y
-CONFIG_PACKAGE_luci-light=y
-CONFIG_PACKAGE_luci-mod-admin-full=y
-CONFIG_PACKAGE_luci-mod-network=y
-CONFIG_PACKAGE_luci-mod-status=y
-CONFIG_PACKAGE_luci-mod-system=y
-CONFIG_PACKAGE_luci-proto-ipv6=y
-CONFIG_PACKAGE_luci-proto-ppp=y
-CONFIG_PACKAGE_luci-theme-bootstrap=y
-CONFIG_PACKAGE_nano=y
-CONFIG_PACKAGE_resolveip=y
-CONFIG_PACKAGE_rpcd=y
-CONFIG_PACKAGE_rpcd-mod-file=y
-CONFIG_PACKAGE_rpcd-mod-iwinfo=y
-CONFIG_PACKAGE_rpcd-mod-luci=y
-CONFIG_PACKAGE_rpcd-mod-rpcsys=y
-CONFIG_PACKAGE_rpcd-mod-rrdns=y
-CONFIG_PACKAGE_rpcd-mod-ucode=y
-CONFIG_PACKAGE_sed=y
-CONFIG_PACKAGE_sqm-scripts=y
-CONFIG_PACKAGE_tc-tiny=y
-CONFIG_PACKAGE_tcpdump=y
-CONFIG_PACKAGE_terminfo=y
-CONFIG_PACKAGE_ucode-mod-html=y
-CONFIG_PACKAGE_ucode-mod-log=y
-CONFIG_PACKAGE_ucode-mod-math=y
-CONFIG_PACKAGE_uhttpd=y
-CONFIG_PACKAGE_uhttpd-mod-ubus=y
-CONFIG_PACKAGE_xtables-nft=y
-CONFIG_PCRE2_JIT_ENABLED=y
 CONFIG_TESTING_KERNEL=y
-CONFIG_PACKAGE_kmod-crypto-crc32c=y
+CONFIG_LINUX_6_18=y
+
+# Package flags section
+$(for pkg in $PACKAGES; do echo "CONFIG_PACKAGE_$pkg=y"; done)
 EOF
-make clean
+
 make defconfig
 scripts/diffconfig.sh
+make clean
+
 time make download
-time make world -j32 # V=s
+time make world -j32 V=1 # V=sc or V=s
