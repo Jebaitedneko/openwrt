@@ -5,48 +5,81 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: archlinux:latest
 
     steps:
-      - name: Install Git
-        run: |
-          pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm git
-
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Prepare ccache path on Host
         run: |
-          pacman -Syu --noconfirm
-          pacman -S --needed --noconfirm \
-            base-devel bash bzip2 git libelf libxslt ncurses \
-            openssl rsync swig time unzip util-linux wget which zlib \
-            asciidoc help2man intltool perl-extutils-makemaker python-setuptools \
-            zip curl ccache
+          sudo mkdir -p /home/builduser/.ccache
+          sudo chown -R $USER:$USER /home/builduser
 
-      - name: Create Build User
-        run: |
-          useradd -m builduser
-          chown -R builduser:builduser .
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /home/builduser/.ccache
+          key: ${{ runner.os }}-openwrt-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-openwrt-ccache-
 
-      - name: Run Build Script
+      - name: Build Local Docker Image
         run: |
-          sudo -u builduser bash ./build.sh
+          cat << 'EOF' > Dockerfile
+          FROM archlinux:latest
+
+          RUN pacman -Syu --noconfirm && \
+              pacman -S --needed --noconfirm \
+              base-devel bash bzip2 git libelf libxslt ncurses \
+              openssl rsync swig time unzip util-linux wget which zlib \
+              asciidoc help2man intltool perl-extutils-makemaker python-setuptools \
+              zip curl ccache ninja
+
+          RUN useradd -m -u 1001 builduser
+          USER builduser
+          ENV PATH="/usr/bin/core_perl:$PATH"
+          EOF
+
+          docker build -t openwrt-builder .
+
+      - name: Run Build Script in Docker
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -v /home/builduser/.ccache:/home/builduser/.ccache \
+            -w /workspace \
+            openwrt-builder bash ./build.sh
 
       - name: Package Artifacts
         run: |
           cd bin/targets/mediatek/filogic
-          zip ../../../../images.zip openwrt-mediatek-filogic*
+
+          VERSION=$(cat version.buildinfo | tr -d '\r\n')
+          ZIP_NAME="images-${VERSION}.zip"
+
+          find . -maxdepth 1 -type f -print0 | xargs -0 zip ../../../../${ZIP_NAME}
+
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
       - name: Upload to tmpfiles.org
         run: |
-          RESPONSE=$(curl -F "file=@images.zip" https://tmpfiles.org/api/v1/upload)
+          RESPONSE=$(curl -F "file=@${ZIP_NAME}" https://tmpfiles.org/api/v1/upload)
           echo "Upload Response: $RESPONSE"
           URL=$(echo $RESPONSE | sed 's/.*"url":"\([^"]*\)".*/\1/')
           DOWNLOAD_URL=$(echo $URL | sed 's/tmpfiles.org\//tmpfiles.org\/dl\//')
           echo "Artifact uploaded to: $DOWNLOAD_URL"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          gh release create "$VERSION" "$ZIP_NAME" \
+            --title "OpenWrt Firmware $VERSION" \
+            --generate-notes
