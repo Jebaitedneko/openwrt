@@ -1,0 +1,148 @@
+name: OpenWrt Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: "Select the runner to use"
+        required: true
+        default: "ubuntu-latest"
+        type: choice
+        options:
+          - "ubuntu-latest"
+          - "self-hosted"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ github.event.inputs.runner_type }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+          clean: ${{ github.event.inputs.runner_type != 'self-hosted' }}
+
+      - name: Prepare ccache Path on Host
+        run: |
+          mkdir -p .ccache
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          enableCrossOsArchive: true
+          path: .ccache
+          key: ccache-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ github.ref_name }}-
+
+      - name: Build Local Docker Image
+        run: |
+          flags=$(awk -F: '/^flags/ {print " " $2 " "; exit}' /proc/cpuinfo)
+
+          check_support() {
+            for flag in "$@"; do
+                case "${flags}" in
+                    *" ${flag} "*) continue ;;
+                    *) return 1;;
+                esac
+            done
+            return 0
+          }
+
+          TARGET_IMAGE="cachyos/cachyos"
+
+          if check_support avx avx2 bmi1 bmi2 f16c fma abm movbe xsave; then
+            TARGET_IMAGE="cachyos/cachyos-v3"
+          fi
+
+          if check_support avx512f avx512bw avx512cd avx512dq avx512vl; then
+            TARGET_IMAGE="cachyos/cachyos-v4"
+          fi
+
+          USER_ID=$(id -u)
+
+          cat << 'EOF' > Dockerfile
+          ARG TARGET_IMAGE
+          FROM ${TARGET_IMAGE}:latest
+          ARG USER_ID
+          RUN pacman-key --init && pacman-key --populate archlinux && \
+              pacman -Syu --noconfirm && \
+              pacman -S --needed --noconfirm \
+              base-devel git bash aria2 bzip2 libelf libxslt ncurses \
+              openssl rsync swig time unzip util-linux wget which \
+              asciidoc help2man intltool perl-extutils-makemaker python-setuptools \
+              zip curl ccache ninja inetutils # zlib
+          RUN useradd -m -u ${USER_ID} builduser
+          USER builduser
+          ENV PATH="/usr/bin/core_perl:$PATH"
+          EOF
+
+          export DOCKER_BUILDKIT=1
+          docker buildx build \
+            --build-arg TARGET_IMAGE=$TARGET_IMAGE \
+            --build-arg USER_ID=$USER_ID \
+            -t openwrt-builder \
+            --load .
+
+      - name: Run Build Script in Docker
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            openwrt-builder \
+            bash -c '
+              git config --global --add safe.directory /workspace && \
+              git config --global user.name "Jebaitedneko" && \
+              git config --global user.email "Jebaitedneko@gmail.com" && \
+              ./build.sh
+            '
+
+      - name: Package Artifacts
+        run: |
+          if [ -d "bin/targets/mediatek/filogic" ]; then
+            cd bin/targets/mediatek/filogic
+            VERSION=$(cat version.buildinfo 2>/dev/null || echo "unknown")
+            ZIP_NAME="images-${VERSION}.zip"
+            TARGET_PATH="../../../../${ZIP_NAME}"
+
+            if [ -f "$TARGET_PATH" ]; then
+                echo "Found existing artifact $ZIP_NAME. Deleting to ensure a fresh package..."
+                rm "$TARGET_PATH"
+            fi
+
+            find . -maxdepth 1 -type f -print0 | xargs -0 zip "$TARGET_PATH"
+
+            echo "VERSION=${VERSION}" >> $GITHUB_ENV
+            echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          else
+            echo "Build output directory not found!"
+            exit 1
+          fi
+
+      - name: Upload to tmpfiles.org
+        run: |
+          RESPONSE=$(curl -F "file=@${ZIP_NAME}" https://tmpfiles.org/api/v1/upload)
+          echo "Upload Response: $RESPONSE"
+          URL=$(echo $RESPONSE | sed 's/.*"url":"\([^"]*\)".*/\1/')
+          DOWNLOAD_URL=$(echo $URL | sed 's/tmpfiles.org\//tmpfiles.org\/dl\//')
+          echo "Artifact uploaded to: $DOWNLOAD_URL"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION exists. Updating assets..."
+            gh release upload "$VERSION" "$ZIP_NAME" --clobber
+            gh release edit "$VERSION" --generate-notes
+          else
+            echo "Creating new release $VERSION..."
+            gh release create "$VERSION" "$ZIP_NAME" \
+              --title "OpenWrt Firmware $VERSION" \
+              --generate-notes
+          fi
