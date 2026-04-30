@@ -1,0 +1,52 @@
+name: OpenWrt Build
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install Git
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm git
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --needed --noconfirm \
+            base-devel bash bzip2 git libelf libxslt ncurses \
+            openssl rsync swig time unzip util-linux wget which zlib \
+            asciidoc help2man intltool perl-extutils-makemaker python-setuptools \
+            zip curl ccache
+
+      - name: Create Build User
+        run: |
+          useradd -m builduser
+          chown -R builduser:builduser .
+
+      - name: Run Build Script
+        run: |
+          sudo -u builduser bash ./build.sh
+
+      - name: Package Artifacts
+        run: |
+          cd bin/targets/mediatek/filogic
+          zip ../../../../images.zip openwrt-mediatek-filogic*
+
+      - name: Upload to tmpfiles.org
+        run: |
+          RESPONSE=$(curl -F "file=@images.zip" https://tmpfiles.org/api/v1/upload)
+          echo "Upload Response: $RESPONSE"
+          URL=$(echo $RESPONSE | sed 's/.*"url":"\([^"]*\)".*/\1/')
+          DOWNLOAD_URL=$(echo $URL | sed 's/tmpfiles.org\//tmpfiles.org\/dl\//')
+          echo "Artifact uploaded to: $DOWNLOAD_URL"
