@@ -142,7 +142,7 @@ sub download_cmd {
 
 		return join(" ", "[ -d $ENV{'TMPDIR'}/aria2c ] || mkdir $ENV{'TMPDIR'}/aria2c;",
 			"touch $ENV{'TMPDIR'}/aria2c/${rfn}_spp;",
-			qw(aria2c --stderr -c -x2 -s10 -j10 -k1M), $url, $additional_mirrors,
+			qw(aria2c --stderr -c -x2 -s10 -j10 -k1M --max-tries=3 --connect-timeout=5), $url, $additional_mirrors,
 			$check_certificate ? () : '--check-certificate=false',
 			"--server-stat-of=$ENV{'TMPDIR'}/aria2c/${rfn}_spp",
 			"--server-stat-if=$ENV{'TMPDIR'}/aria2c/${rfn}_spp",
