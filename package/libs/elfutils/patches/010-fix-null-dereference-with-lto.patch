@@ -1,0 +1,33 @@
+From 13153e98ee4f4b4ad2c73c2a747b6c2db984e029 Mon Sep 17 00:00:00 2001
+From: Mark Wielaard <mark@klomp.org>
+Date: Mon, 15 Sep 2025 23:58:08 +0200
+Subject: [PATCH] libelf: check ehdr isn't NULL before calling default_ehdr
+
+default_ehdr assumes the passed ehdr pointer is not NULL and can be
+directly dereferenced. But getehdr can return NULL. So explicitly
+check.
+
+	* libelf/elf32_updatenull.c (updatenull_wrlock): Check ehdr is
+        not NULL.
+
+https://sourceware.org/bugzilla/show_bug.cgi?id=33433
+
+Signed-off-by: Mark Wielaard <mark@klomp.org>
+---
+ libelf/elf32_updatenull.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/libelf/elf32_updatenull.c b/libelf/elf32_updatenull.c
+index 3594e8ba..74c27fda 100644
+--- a/libelf/elf32_updatenull.c
++++ b/libelf/elf32_updatenull.c
+@@ -135,7 +135,8 @@ __elfw2(LIBELFBITS,updatenull_wrlock) (Elf *elf, int *change_bop, size_t shnum)
+   ehdr = __elfw2(LIBELFBITS,getehdr_wrlock) (elf);
+ 
+   /* Set the default values.  */
+-  if (ELFW(default_ehdr,LIBELFBITS) (elf, ehdr, shnum, change_bop) != 0)
++  if (ehdr == NULL
++      || ELFW(default_ehdr,LIBELFBITS) (elf, ehdr, shnum, change_bop) != 0)
+     return -1;
+ 
+   /* At least the ELF header is there.  */
