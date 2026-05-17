@@ -1,0 +1,34 @@
+From 8bde14bde8a6d662a9112c9441045915f7b97034 Mon Sep 17 00:00:00 2001
+From: Jebaitedneko <Jebaitedneko@gmail.com>
+Date: Sun, 17 May 2026 21:51:24 +0530
+Subject: [PATCH] pppd: mark strl{cat,cpy} __weak so they can be overridden
+
+---
+ pppd/utils.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/pppd/utils.c b/pppd/utils.c
+index c995e3c..a541974 100644
+--- a/pppd/utils.c
++++ b/pppd/utils.c
+@@ -78,7 +78,7 @@ struct buffer_info {
+  * strlcpy - like strcpy/strncpy, doesn't overflow destination buffer,
+  * always leaves destination null-terminated (for len > 0).
+  */
+-size_t
++__attribute__((weak)) size_t
+ strlcpy(char *dest, const char *src, size_t len)
+ {
+     size_t ret = strlen(src);
+@@ -98,7 +98,7 @@ strlcpy(char *dest, const char *src, size_t len)
+  * strlcat - like strcat/strncat, doesn't overflow destination buffer,
+  * always leaves destination null-terminated (for len > 0).
+  */
+-size_t
++__attribute__((weak)) size_t
+ strlcat(char *dest, const char *src, size_t len)
+ {
+     size_t dlen = strlen(dest);
+-- 
+2.54.0
+
