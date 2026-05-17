@@ -28,7 +28,7 @@ on:
         type: boolean
       prebuilt_gcc_version:
         description: 'Prebuilt GCC version'
-        default: "aarch64-openwrt-linux-musl-gcc-15.2.0-438fd996"
+        default: "aarch64-openwrt-linux-musl-gcc-16.1.0-50efb4d9"
         required: true
         type: string
 
