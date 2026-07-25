@@ -1,0 +1,57 @@
+From: Christian Marangi <ansuelsmth@gmail.com>
+Date: Fri, 7 Nov 2025 00:57:05 +0100
+Subject: [PATCH] pinctrl: airoha: add PHY LED GPIO macros
+
+Define AIROHA_PINCTRL_PHY_LED0/1 helpers used by AN7583 pin groups.
+The full convert-PHY-LED-GPIO-to-macro series was dropped in the 6.18.40
+bump, but 109-05 still references these macros.
+
+[dpawlik: slim restore of macro defs from 109-02 for 6.18.40]
+Signed-off-by: Daniel Pawlik <pawlik.dan@gmail.com>
+---
+
+--- a/drivers/pinctrl/mediatek/pinctrl-airoha.c
++++ b/drivers/pinctrl/mediatek/pinctrl-airoha.c
+@@ -1146,6 +1146,42 @@
+ 	AIROHA_PINCTRL_PWM_EXT("gpio47", GPIO47_FLASH_MODE_CFG),
+ };
+ 
++#define AIROHA_PINCTRL_PHY_LED0(gpio, mux_val, map_mask, map_val)	\
++	{								\
++		.name = (gpio),						\
++		.regmap[0] = {						\
++			AIROHA_FUNC_MUX,				\
++			REG_GPIO_2ND_I2C_MODE,				\
++			(mux_val),					\
++			(mux_val),					\
++		},							\
++		.regmap[1] = {						\
++			AIROHA_FUNC_MUX,				\
++			REG_LAN_LED0_MAPPING,				\
++			(map_mask),					\
++			(map_val),					\
++		},							\
++		.regmap_size = 2,					\
++	}
++
++#define AIROHA_PINCTRL_PHY_LED1(gpio, mux_val, map_mask, map_val)	\
++	{								\
++		.name = (gpio),						\
++		.regmap[0] = {						\
++			AIROHA_FUNC_MUX,				\
++			REG_GPIO_2ND_I2C_MODE,				\
++			(mux_val),					\
++			(mux_val),					\
++		},							\
++		.regmap[1] = {						\
++			AIROHA_FUNC_MUX,				\
++			REG_LAN_LED1_MAPPING,				\
++			(map_mask),					\
++			(map_val),					\
++		},							\
++		.regmap_size = 2,					\
++	}
++
+ static const struct airoha_pinctrl_func_group phy1_led0_func_group[] = {
+ 	{
+ 		.name = "gpio33",
