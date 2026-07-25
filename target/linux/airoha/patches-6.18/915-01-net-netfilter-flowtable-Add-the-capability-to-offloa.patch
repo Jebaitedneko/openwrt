@@ -102,18 +102,17 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  		key->tcp.flags = 0;
 --- a/net/netfilter/nft_flow_offload.c
 +++ b/net/netfilter/nft_flow_offload.c
-@@ -9,6 +9,7 @@
- #include <linux/if_vlan.h>
+@@ -8,6 +8,7 @@
+ #include <linux/spinlock.h>
  #include <linux/netfilter/nf_conntrack_common.h>
  #include <linux/netfilter/nf_tables.h>
 +#include <net/dsfield.h>
  #include <net/ip.h>
  #include <net/flow.h>
  #include <net/netfilter/nf_tables.h>
-@@ -279,6 +280,27 @@ static int nft_flow_route(const struct n
- 	return 0;
- }
- EXPORT_SYMBOL_GPL(flow_offload_bridge_init);
+@@ -20,6 +21,27 @@ struct nft_flow_offload {
+ 	struct nft_flowtable	*flowtable;
+ };
  
 +static void nft_flow_set_dscp(const struct nft_pktinfo *pkt,
 +			      struct flow_offload *flow,
@@ -139,7 +138,7 @@ Signed-off-by: Lorenzo Bianconi <lorenzo@kernel.org>
  static bool nft_flow_offload_skip(struct sk_buff *skb, int family)
  {
  	if (skb_sec_path(skb))
-@@ -371,6 +393,9 @@ static void nft_flow_offload_eval(const
+@@ -125,6 +147,9 @@ static void nft_flow_offload_eval(const
  	if (!flow)
  		goto err_flow_alloc;
  

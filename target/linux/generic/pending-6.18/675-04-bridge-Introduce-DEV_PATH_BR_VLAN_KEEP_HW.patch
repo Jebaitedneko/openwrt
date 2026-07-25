@@ -22,17 +22,20 @@ correcponding bit in ingress_vlans set.
 
 Based on commit 498b63adbfd9 from ericwoud/bpir-nftflow-nf-next-20260512.
 
+[dpawlik: rebased for 6.18.40 — nft_dev_path_info lives in nf_flow_table_path.c]
+
 Signed-off-by: Eric Woudstra <ericwouds@gmail.com>
 ---
- include/linux/netdevice.h        |  1 +
- net/bridge/br_device.c           |  1 +
- net/bridge/br_vlan.c             | 18 +++++++++++-------
- net/netfilter/nft_flow_offload.c | 10 ++++++++++
+ include/linux/netdevice.h           |  1 +
+ net/bridge/br_device.c              |  1 +
+ net/bridge/br_vlan.c                | 18 +++++++++++-------
+ net/netfilter/nf_flow_table_path.c  | 10 ++++++++++
  4 files changed, 23 insertions(+), 7 deletions(-)
 
 --- a/include/linux/netdevice.h
 +++ b/include/linux/netdevice.h
-@@ -893,6 +893,7 @@ struct net_device_path {
+@@ -892,6 +892,7 @@ struct net_device_path {
+ 				DEV_PATH_BR_VLAN_KEEP,
  				DEV_PATH_BR_VLAN_TAG,
  				DEV_PATH_BR_VLAN_UNTAG,
  				DEV_PATH_BR_VLAN_UNTAG_HW,
@@ -77,9 +80,9 @@ Signed-off-by: Eric Woudstra <ericwouds@gmail.com>
  	return 0;
  }
  
---- a/net/netfilter/nft_flow_offload.c
-+++ b/net/netfilter/nft_flow_offload.c
-@@ -145,6 +145,16 @@ static void nft_dev_path_info(const stru
+--- a/net/netfilter/nf_flow_table_path.c
++++ b/net/netfilter/nf_flow_table_path.c
+@@ -137,6 +137,16 @@ static void nft_dev_path_info(const stru
  			case DEV_PATH_BR_VLAN_UNTAG_HW:
  				info->ingress_vlans |= BIT(info->num_encaps - 1);
  				break;
