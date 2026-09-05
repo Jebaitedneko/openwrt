@@ -24,7 +24,7 @@ on:
       prebuilt_gcc:
         description: "Use prebuilt GCC?"
         required: true
-        default: true
+        default: false
         type: boolean
       prebuilt_gcc_version:
         description: 'Prebuilt GCC version'
