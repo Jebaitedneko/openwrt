@@ -4,6 +4,10 @@ set -xeuo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
 
 PACKAGES_FROM_FIRMWARE_SELECTOR="apk-mbedtls base-files ca-bundle dnsmasq dropbear firewall4 fitblk fstools kmod-crypto-hw-safexcel kmod-gpio-button-hotplug kmod-leds-gpio kmod-nft-offload libc libgcc libustream-mbedtls logd mtd netifd nftables odhcp6c odhcpd-ipv6only ppp ppp-mod-pppoe procd-ujail uboot-envtools uci uclient-fetch urandom-seed urngd wpad-basic-mbedtls kmod-leds-gca230718 kmod-mt7915e kmod-mt7981-firmware mt7981-wo-firmware luci luci-app-attendedsysupgrade"
+
+# JioRouter
+PACKAGES_FROM_FIRMWARE_SELECTOR="$PACKAGES_FROM_FIRMWARE_SELECTOR kmod-usb3 kmod-mt7986-firmware mt7986-wo-firmware"
+
 MY_PACKAGES="luci-app-adblock-fast gawk grep sed coreutils-sort dnsmasq-full ipset libnettle8 libnetfilter-conntrack3 ip6tables-mod-nat kmod-ipt-nat6 luci-app-sqm btop"
 PACKAGES="$PACKAGES_FROM_FIRMWARE_SELECTOR $MY_PACKAGES"
 
@@ -15,6 +19,7 @@ cat <<EOF > .config
 CONFIG_TARGET_mediatek=y
 CONFIG_TARGET_mediatek_filogic=y
 CONFIG_TARGET_mediatek_filogic_DEVICE_dlink_aquila-pro-ai-m30-a1=y
+CONFIG_TARGET_mediatek_filogic_DEVICE_jiorouter_ax6000-jidu6j01=y
 
 CONFIG_USE_LTO=y
 CONFIG_USE_MOLD=y
