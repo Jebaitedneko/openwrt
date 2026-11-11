@@ -1,0 +1,216 @@
+name: OpenWrt Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: "Select the runner to use"
+        required: true
+        default: "ubuntu-latest"
+        type: choice
+        options:
+          - "ubuntu-latest"
+          - "self-hosted"
+      clean_build:
+        description: "Clean build_dir/staging_dir (not needed on ephemeral runners)"
+        required: true
+        default: false
+        type: boolean
+      distclean_build:
+        description: "Distclean, including build_dir/staging_dir (dl and ccache are preserved)"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  CLEAN_BUILD: ${{ inputs.clean_build }}
+  DISTCLEAN_BUILD: ${{ inputs.distclean_build }}
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner_type }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+          clean: ${{ inputs.runner_type != 'self-hosted' }}
+
+      - name: Prepare Cache Paths
+        run: mkdir -p .ccache dl
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          enableCrossOsArchive: true
+          path: .ccache
+          key: ccache-${{ github.ref_name }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-${{ github.ref_name }}-
+
+      - name: Cache Downloads
+        uses: actions/cache@v6
+        with:
+          path: dl
+          key: dl-${{ github.ref_name }}
+
+      # Rolling cache: restore the newest older entry, then save a fresh one
+      # after every build. Make decides which parts actually need rebuilding.
+      - name: Restore Toolchain Cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            build_dir/toolchain-*
+            staging_dir/toolchain-*
+          key: toolchain-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            toolchain-${{ runner.os }}-
+
+      - name: Build Local Docker Image
+        run: |
+          flags=$(awk -F: '/^flags/ {print " " $2 " "; exit}' /proc/cpuinfo)
+
+          check_support() {
+            for flag in "$@"; do
+                case "${flags}" in
+                    *" ${flag} "*) continue ;;
+                    *) return 1;;
+                esac
+            done
+            return 0
+          }
+
+          TARGET_IMAGE="cachyos/cachyos"
+
+          if check_support avx avx2 bmi1 bmi2 f16c fma abm movbe xsave; then
+            TARGET_IMAGE="cachyos/cachyos-v3"
+          fi
+
+          if check_support avx512f avx512bw avx512cd avx512dq avx512vl; then
+            TARGET_IMAGE="cachyos/cachyos-v4"
+          fi
+
+          USER_ID=$(id -u)
+
+          cat << 'EOF' > Dockerfile
+          ARG TARGET_IMAGE
+          FROM ${TARGET_IMAGE:-cachyos}:latest
+          ARG USER_ID
+          RUN pacman-key --init && pacman-key --populate archlinux && \
+              pacman -Syu --noconfirm && \
+              pacman -S --needed --noconfirm \
+              base-devel git bash aria2 bzip2 libelf libxslt ncurses \
+              openssl rsync swig time unzip util-linux wget which \
+              asciidoc help2man intltool perl-extutils-makemaker python-setuptools \
+              zip curl ccache ninja inetutils # zlib
+          RUN useradd -m -u ${USER_ID} builduser
+          USER builduser
+          ENV PATH="/usr/bin/core_perl:$PATH"
+          EOF
+
+          export DOCKER_BUILDKIT=1
+          docker buildx build \
+            --build-arg TARGET_IMAGE="$TARGET_IMAGE" \
+            --build-arg USER_ID="$USER_ID" \
+            -t openwrt-builder \
+            --load .
+
+      - name: Run Build Script in Docker
+        run: |
+          docker run --rm \
+            -e CLEAN_BUILD \
+            -e DISTCLEAN_BUILD \
+            -e USE_CCACHE=1 \
+            -e CCACHE_NOHASHDIR=1 \
+            -e CCACHE_COMPILERCHECK=content \
+            -e CCACHE_DIR=/workspace/.ccache \
+            -e CCACHE_MAXSIZE=8G \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            openwrt-builder \
+            bash -c '
+              git config --global --add safe.directory /workspace && \
+              git config --global user.name "$(git log -1 --format=%an)" && \
+              git config --global user.email "$(git log -1 --format=%ae)" && \
+              ./build.sh
+            '
+
+      - name: Save Toolchain Cache
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            build_dir/toolchain-*
+            staging_dir/toolchain-*
+          key: toolchain-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # One rolling release; the asset is replaced on every build.
+      - name: Publish Prebuilt Toolchain
+        if: ${{ inputs.runner_type != 'self-hosted' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: toolchain-${{ runner.os }}-gcc16
+        run: |
+          TOOLCHAIN_DIR=$(find staging_dir -maxdepth 1 -mindepth 1 -type d -name 'toolchain-*' | sort | head -n 1)
+
+          if [ -z "$TOOLCHAIN_DIR" ] || [ ! -d "$TOOLCHAIN_DIR/bin" ]; then
+            echo "::warning::No built toolchain found in staging_dir; skipping publication."
+            exit 0
+          fi
+
+          ASSET="${TAG}.tar.zst"
+          echo "Packaging $TOOLCHAIN_DIR as $ASSET..."
+          tar -C "$TOOLCHAIN_DIR" -cf - . | zstd -T0 -19 -o "$ASSET"
+          ls -lh "$ASSET"
+
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --prerelease \
+              --title "Prebuilt toolchain" \
+              --notes "Rolling aarch64 toolchain built from ${GITHUB_SHA}."
+          fi
+
+          gh release upload "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" --clobber
+          rm -f "$ASSET"
+
+      - name: Package Artifacts
+        run: |
+          if [ ! -d "bin/targets/mediatek/filogic" ]; then
+            echo "::error::Build output directory not found!"
+            exit 1
+          fi
+
+          cd bin/targets/mediatek/filogic
+          VERSION=$(cat version.buildinfo 2>/dev/null || echo "unknown")
+          ZIP_NAME="images-${VERSION}.zip"
+          TARGET_PATH="../../../../${ZIP_NAME}"
+
+          rm -f "$TARGET_PATH"
+          find . -maxdepth 1 -type f -print0 | xargs -0 zip "$TARGET_PATH"
+
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
+
+      - name: Upload to tmpfiles.org
+        run: |
+          RESPONSE=$(curl -sF "file=@${ZIP_NAME}" https://tmpfiles.org/api/v1/upload)
+          URL=$(printf '%s' "$RESPONSE" | jq -r '.data.url' | sed 's|tmpfiles.org/|tmpfiles.org/dl/|')
+          echo "Artifact uploaded to: $URL"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $VERSION exists. Updating assets..."
+            gh release upload "$VERSION" "$ZIP_NAME" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            echo "Creating new release $VERSION..."
+            gh release create "$VERSION" "$ZIP_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "OpenWrt Firmware $VERSION"
+          fi
