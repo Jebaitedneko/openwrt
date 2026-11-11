@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -xeuo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+
+DEVICES="dlink_aquila-pro-ai-m30-a1 jiorouter_ax6000-jidu6j01"
+
+PACKAGES_FROM_FIRMWARE_SELECTOR="apk-mbedtls base-files ca-bundle dnsmasq dropbear firewall4 fitblk fstools kmod-crypto-hw-safexcel kmod-gpio-button-hotplug kmod-leds-gpio kmod-nft-offload libc libgcc libustream-mbedtls logd mtd netifd nftables odhcp6c odhcpd-ipv6only ppp ppp-mod-pppoe procd-ujail uboot-envtools uci uclient-fetch urandom-seed urngd wpad-basic-mbedtls luci luci-app-attendedsysupgrade"
+MY_PACKAGES="luci-app-adblock-fast gawk grep sed coreutils-sort dnsmasq-full ipset libnettle8 libnetfilter-conntrack3 ip6tables-mod-nat kmod-ipt-nat6 kmod-nfnetlink-queue kmod-nft-queue luci-app-sqm btop"
+PACKAGES="$PACKAGES_FROM_FIRMWARE_SELECTOR $MY_PACKAGES"
+
+COMMON_CFLAGS="-O3 -pipe -fno-caller-saves -fno-plt -fno-semantic-interposition -funroll-loops -fgraphite-identity -floop-nest-optimize -fsched-pressure -fipa-pta -fno-conserve-stack"
+TUNING_CFLAGS="-mcpu=cortex-a53+crypto+crc -march=armv8-a+crc+crypto -mtune=cortex-a53"
+
+function generate_config() {
+cat <<EOF > .config
+CONFIG_TARGET_mediatek=y
+CONFIG_TARGET_mediatek_filogic=y
+CONFIG_TARGET_MULTI_PROFILE=y
+CONFIG_TARGET_PER_DEVICE_ROOTFS=y
+
+$(for device in $DEVICES; do echo "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_$device=y"; done)
+
+CONFIG_USE_LTO=y
+CONFIG_USE_MOLD=y
+CONFIG_USE_GC_SECTIONS=y
+
+CONFIG_KERNEL_WERROR=n
+
+CONFIG_DEVEL=y
+
+CONFIG_CCACHE=y
+CONFIG_CCACHE_DIR="${CCACHE_DIR:-$(realpath -m "$SCRIPT_DIR"/.ccache)}"
+
+CONFIG_OPTIMIZE_HOST_TOOLS=y
+CONFIG_HOST_FLAGS_OPT="-O3 -pipe -fipa-pta"
+CONFIG_HOST_TOOLS_STRIP=y
+CONFIG_HOST_FLAGS_STRIP="-Wl,-s"
+CONFIG_HOST_EXTRA_CFLAGS=""
+CONFIG_HOST_EXTRA_CXXFLAGS=""
+CONFIG_HOST_EXTRA_CPPFLAGS=""
+CONFIG_HOST_EXTRA_LDFLAGS=""
+
+CONFIG_TOOLCHAINOPTS=y
+CONFIG_GCC_USE_VERSION_16=y
+CONFIG_GCC_USE_GRAPHITE=y
+
+CONFIG_TARGET_OPTIONS=y
+CONFIG_EXTRA_OPTIMIZATION="$COMMON_CFLAGS $TUNING_CFLAGS"
+CONFIG_TARGET_OPTIMIZATION="$COMMON_CFLAGS $TUNING_CFLAGS"
+CONFIG_KERNEL_CFLAGS="$COMMON_CFLAGS $TUNING_CFLAGS"
+
+CONFIG_DOWNLOAD_TOOL_CUSTOM="aria2c"
+
+$(for pkg in $PACKAGES; do echo "CONFIG_PACKAGE_$pkg=y"; done)
+EOF
+
+if [ -n "${PREBUILT_GCC_VERSION:-}" ]; then
+    echo "PREBUILT_GCC_VERSION is set to '$PREBUILT_GCC_VERSION'. Configuring toolchain..."
+    if [ -d "$PREBUILT_GCC_VERSION" ]; then
+        ./scripts/ext-toolchain.sh \
+            --overwrite-config \
+            --toolchain "$PREBUILT_GCC_VERSION" \
+            --config mediatek/filogic
+    fi
+fi
+
+make defconfig
+scripts/diffconfig.sh
+}
+
+if [ "${DISTCLEAN_BUILD:-false}" = "true" ]; then
+    preserved_paths=""
+    for path in dl .ccache .sccache; do
+        rm -rf "$SCRIPT_DIR/$path.distclean-keep"
+        if [ -e "$SCRIPT_DIR/$path" ]; then
+            mv "$SCRIPT_DIR/$path" "$SCRIPT_DIR/$path.distclean-keep"
+            preserved_paths="$preserved_paths $path"
+        fi
+    done
+
+    make distclean
+
+    for path in $preserved_paths; do
+        mv "$SCRIPT_DIR/$path.distclean-keep" "$SCRIPT_DIR/$path"
+    done
+elif [ "${CLEAN_BUILD:-false}" = "true" ]; then
+    generate_config
+    make clean
+fi
+
+scripts/feeds update -a
+scripts/feeds install -a
+
+generate_config
+
+PROCS=$(nproc --all)
+time make download -j$((PROCS * 2)) # V=1 or V=sc or V=s
+time make world -j"$PROCS" V=s # V=1 or V=sc or V=s
+
+if [ -n "${CCACHE_DIR:-}" ]; then
+    ccache -s || true
+fi
