@@ -1,0 +1,42 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: "0 0 * * 0"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Rebase, Push, and Trigger Build
+        run: |
+          branch=$(git rev-parse --abbrev-ref HEAD)
+          upstream=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.parent.full_name')
+
+          git config user.name "$GITHUB_REPOSITORY_OWNER"
+          git config user.email "$GITHUB_REPOSITORY_OWNER@users.noreply.github.com"
+
+          git remote add upstream "https://github.com/${upstream}.git"
+          git fetch upstream "+refs/heads/${branch}:refs/remotes/upstream/${branch}"
+
+          if git merge-base --is-ancestor "upstream/${branch}" HEAD; then
+            echo "Already up to date with ${upstream}/${branch}."
+            exit 0
+          fi
+
+          echo "Rebasing onto ${upstream}/${branch}..."
+          git rebase "upstream/${branch}"
+          git push origin "HEAD:${branch}" --force-with-lease
+
+          echo "Triggering build.yml..."
+          sleep 10
+          gh workflow run build.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
