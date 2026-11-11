@@ -18,7 +18,6 @@ CONFIG_TARGET_mediatek=y
 CONFIG_TARGET_mediatek_filogic=y
 CONFIG_TARGET_MULTI_PROFILE=y
 CONFIG_TARGET_PER_DEVICE_ROOTFS=y
-CONFIG_TESTING_KERNEL=y
 
 $(for device in $DEVICES; do echo "CONFIG_TARGET_DEVICE_mediatek_filogic_DEVICE_$device=y"; done)
 
