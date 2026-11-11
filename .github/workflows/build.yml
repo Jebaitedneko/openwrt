@@ -1,0 +1,346 @@
+name: OpenWrt Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_type:
+        description: "Select the runner to use"
+        required: true
+        default: "ubuntu-latest"
+        type: choice
+        options:
+          - "ubuntu-latest"
+          - "self-hosted"
+      clean_build:
+        description: "Clean build_dir/staging_dir (not needed on ephemeral runners)"
+        required: true
+        default: false
+        type: boolean
+      distclean_build:
+        description: "Distclean, including build_dir/staging_dir (dl and ccache are preserved)"
+        required: true
+        default: false
+        type: boolean
+      prebuilt_gcc:
+        description: "Use a matching prebuilt GCC toolchain (published automatically)"
+        required: true
+        default: true
+        type: boolean
+      prebuilt_gcc_version:
+        description: "Override prebuilt toolchain release tag (empty = derive from toolchain inputs)"
+        default: ""
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+env:
+  CLEAN_BUILD: ${{ inputs.clean_build }}
+  DISTCLEAN_BUILD: ${{ inputs.distclean_build }}
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner_type }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+          clean: ${{ inputs.runner_type != 'self-hosted' }}
+
+      - name: Compute Toolchain Identity
+        id: toolchain
+        run: |
+          # Hash only the inputs that produce the toolchain. Hashing the whole
+          # toolchain/ tree would invalidate the cache on unrelated changes.
+          gcc=$(sed -n 's/^CONFIG_GCC_USE_VERSION_\([0-9]*\)=y$/\1/p' build.sh)
+          gcc=${gcc:-14}
+          binutils=$(sed -n 's/^CONFIG_BINUTILS_USE_VERSION_\([0-9]*\)_\([0-9]*\)=y$/\1.\2/p' build.sh)
+          binutils=${binutils:-2.46}
+
+          if grep -qx 'CONFIG_TESTING_KERNEL=y' build.sh; then
+            kernel=$(sed -n 's/^KERNEL_TESTING_PATCHVER:=//p' target/linux/mediatek/Makefile)
+          else
+            kernel=$(sed -n 's/^KERNEL_PATCHVER:=//p' target/linux/mediatek/Makefile)
+          fi
+          kernel_file="target/linux/generic/kernel-$kernel"
+          if [ ! -f "$kernel_file" ]; then
+            echo "::error::Missing $kernel_file"
+            exit 1
+          fi
+
+          paths=(
+            toolchain/Makefile
+            toolchain/Config.in
+            toolchain/gcc/common.mk
+            toolchain/gcc/Config.in
+            toolchain/gcc/Config.version
+            toolchain/gcc/exclude-testsuite
+            toolchain/gcc/files
+            toolchain/gcc/initial
+            toolchain/gcc/final
+            toolchain/gcc/minimal
+            "toolchain/gcc/patches-$gcc.x"
+            toolchain/binutils/Makefile
+            toolchain/binutils/Config.in
+            toolchain/binutils/Config.version
+            "toolchain/binutils/patches/$binutils"
+            toolchain/musl
+            toolchain/fortify-headers
+            toolchain/kernel-headers
+            include/toolchain-build.mk
+            include/host-build.mk
+            include/hardening.mk
+            include/kernel-version.mk
+            "$kernel_file"
+          )
+          if grep -qx 'CONFIG_USE_MOLD=y' build.sh; then
+            paths+=(tools/mold)
+          fi
+
+          id="gcc$gcc-$(
+            {
+              grep -E '^(COMMON_CFLAGS|TUNING_CFLAGS|CONFIG_(TOOLCHAIN|GCC|BINUTILS|MUSL|LIBC|MOLD|GDB|SJLJ|TESTING_KERNEL|TARGET_OPT|EXTRA_OPTIMIZATION|INSTALL_GCC|INSTALL_GFORTRAN))' build.sh
+              git ls-files -s -- "${paths[@]}"
+            } | sha256sum | cut -c1-16
+          )"
+          tag="aarch64-openwrt-linux-musl-toolchain-$id"
+
+          # One-time migration from the old tree-keyed cache. The fallback
+          # disables itself as soon as the inputs no longer match.
+          if [ "$id" = "gcc16-9cdb836b60a2c85d" ]; then
+            fallback="toolchain-$RUNNER_OS-57fc6839db-27d55e71-155afd56"
+          else
+            fallback="toolchain-$RUNNER_OS-legacy-fallback-disabled"
+          fi
+
+          echo "gcc=$gcc binutils=$binutils kernel=$kernel"
+          echo "identity=$id"
+          {
+            echo "id=$id"
+            echo "tag=$tag"
+            echo "cache-fallback=$fallback"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve Prebuilt Toolchain
+        id: prebuilt
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ inputs.prebuilt_gcc_version || steps.toolchain.outputs.tag }}
+        run: |
+          if [ "${{ inputs.prebuilt_gcc }}" != "true" ]; then
+            echo "Prebuilt toolchain disabled; using the source build/cache."
+            exit 0
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          asset=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null |
+            grep -E "^${TAG}\.tar(\.gz)?\.zst$" | head -n1 || true)
+
+          if [ -n "$asset" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+            echo "asset=$asset" >> "$GITHUB_OUTPUT"
+            if [ "$TAG" = "${{ steps.toolchain.outputs.tag }}" ]; then
+              echo "auto=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "::warning::No prebuilt toolchain for $TAG; building from source."
+          fi
+
+      - name: Prepare Cache Paths
+        run: |
+          mkdir -p .ccache dl
+
+      - name: Cache ccache
+        uses: actions/cache@v6
+        with:
+          enableCrossOsArchive: true
+          path: .ccache
+          key: ccache-${{ github.ref_name }}-${{ steps.toolchain.outputs.id }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ github.ref_name }}-${{ steps.toolchain.outputs.id }}-
+            ccache-${{ github.ref_name }}-57fc6839db-27d55e71-155afd56-
+
+      - name: Cache Downloads
+        uses: actions/cache@v6
+        with:
+          path: dl
+          key: dl-${{ github.ref_name }}
+
+      - name: Restore Toolchain Cache
+        id: toolchain-cache
+        if: ${{ steps.prebuilt.outputs.available != 'true' && inputs.clean_build != true && inputs.distclean_build != true }}
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            build_dir/toolchain-*
+            staging_dir/toolchain-*
+          key: toolchain-${{ runner.os }}-${{ steps.toolchain.outputs.id }}
+          restore-keys: |
+            ${{ steps.toolchain.outputs.cache-fallback }}
+
+      - name: Download Toolchain from Release
+        if: ${{ steps.prebuilt.outputs.available == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ steps.prebuilt.outputs.tag }}
+          ASSET: ${{ steps.prebuilt.outputs.asset }}
+        run: |
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET"
+          mkdir -p "$TAG"
+          case "$ASSET" in
+            *.tar.gz.zst) zstd -dc "$ASSET" | tar -xzf - -C "$TAG" ;;
+            *)            zstd -dc "$ASSET" | tar -xf - -C "$TAG" ;;
+          esac
+          rm -f "$ASSET"
+          echo "PREBUILT_GCC_VERSION=$TAG" >> "$GITHUB_ENV"
+
+      - name: Build Local Docker Image
+        run: |
+          flags=$(awk -F: '/^flags/ {print " " $2 " "; exit}' /proc/cpuinfo)
+
+          check_support() {
+            for flag in "$@"; do
+                case "${flags}" in
+                    *" ${flag} "*) continue ;;
+                    *) return 1;;
+                esac
+            done
+            return 0
+          }
+
+          TARGET_IMAGE="cachyos/cachyos"
+
+          if check_support avx avx2 bmi1 bmi2 f16c fma abm movbe xsave; then
+            TARGET_IMAGE="cachyos/cachyos-v3"
+          fi
+
+          if check_support avx512f avx512bw avx512cd avx512dq avx512vl; then
+            TARGET_IMAGE="cachyos/cachyos-v4"
+          fi
+
+          USER_ID=$(id -u)
+
+          cat << 'EOF' > Dockerfile
+          ARG TARGET_IMAGE
+          FROM ${TARGET_IMAGE:-cachyos}:latest
+          ARG USER_ID
+          RUN pacman-key --init && pacman-key --populate archlinux && \
+              pacman -Syu --noconfirm && \
+              pacman -S --needed --noconfirm \
+              base-devel git bash aria2 bzip2 libelf libxslt ncurses \
+              openssl rsync swig time unzip util-linux wget which \
+              asciidoc help2man intltool perl-extutils-makemaker python-setuptools \
+              zip curl ccache ninja inetutils # zlib
+          RUN useradd -m -u ${USER_ID} builduser
+          USER builduser
+          ENV PATH="/usr/bin/core_perl:$PATH"
+          EOF
+
+          export DOCKER_BUILDKIT=1
+          docker buildx build \
+            --build-arg TARGET_IMAGE=$TARGET_IMAGE \
+            --build-arg USER_ID=$USER_ID \
+            -t openwrt-builder \
+            --load .
+
+      - name: Run Build Script in Docker
+        run: |
+          docker run --rm \
+            -e PREBUILT_GCC_VERSION \
+            -e CLEAN_BUILD \
+            -e DISTCLEAN_BUILD \
+            -e USE_CCACHE=1 \
+            -e CCACHE_NOHASHDIR=1 \
+            -e CCACHE_COMPILERCHECK=content \
+            -e CCACHE_DIR=/workspace/.ccache \
+            -e CCACHE_MAXSIZE=8G \
+            -v ${{ github.workspace }}:/workspace \
+            -w /workspace \
+            openwrt-builder \
+            bash -c '
+              git config --global --add safe.directory /workspace && \
+              git config --global user.name "$(git log -1 --format=%an)" && \
+              git config --global user.email "$(git log -1 --format=%ae)" && \
+              ./build.sh
+            '
+
+      - name: Save Toolchain Cache
+        if: ${{ steps.prebuilt.outputs.available != 'true' && steps.toolchain-cache.outputs.cache-hit != 'true' && inputs.clean_build != true && inputs.distclean_build != true }}
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            build_dir/toolchain-*
+            staging_dir/toolchain-*
+          key: toolchain-${{ runner.os }}-${{ steps.toolchain.outputs.id }}
+
+      - name: Publish Prebuilt Toolchain
+        if: ${{ steps.prebuilt.outputs.auto == 'true' && steps.prebuilt.outputs.available != 'true' && inputs.runner_type != 'self-hosted' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          TAG: ${{ steps.prebuilt.outputs.tag }}
+          ID: ${{ steps.toolchain.outputs.id }}
+        run: |
+          TOOLCHAIN_DIR=$(find staging_dir -maxdepth 1 -mindepth 1 -type d -name 'toolchain-*' | sort | head -n 1)
+
+          if [ -z "$TOOLCHAIN_DIR" ] || [ ! -d "$TOOLCHAIN_DIR/bin" ]; then
+            echo "::warning::No source-built toolchain found in staging_dir; skipping publication."
+            exit 0
+          fi
+
+          ASSET="${TAG}.tar.zst"
+          echo "Packaging $TOOLCHAIN_DIR as $ASSET..."
+          tar -C "$TOOLCHAIN_DIR" -cf - . | zstd -T0 -19 -o "$ASSET"
+          ls -lh "$ASSET"
+
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --prerelease \
+              --title "Prebuilt toolchain $ID" \
+              --notes "Automatically built from ${GITHUB_SHA} for ${TAG}."
+          fi
+
+          gh release upload "$TAG" "$ASSET" --repo "$GITHUB_REPOSITORY" --clobber
+          rm -f "$ASSET"
+
+      - name: Package Artifacts
+        run: |
+          if [ ! -d "bin/targets/mediatek/filogic" ]; then
+            echo "::error::Build output directory not found!"
+            exit 1
+          fi
+
+          cd bin/targets/mediatek/filogic
+          VERSION=$(cat version.buildinfo 2>/dev/null || echo "unknown")
+          ZIP_NAME="images-${VERSION}.zip"
+          TARGET_PATH="../../../../${ZIP_NAME}"
+
+          rm -f "$TARGET_PATH"
+          find . -maxdepth 1 -type f -print0 | xargs -0 zip "$TARGET_PATH"
+
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          echo "ZIP_NAME=${ZIP_NAME}" >> "$GITHUB_ENV"
+
+      - name: Upload to tmpfiles.org
+        run: |
+          RESPONSE=$(curl -sF "file=@${ZIP_NAME}" https://tmpfiles.org/api/v1/upload)
+          URL=$(printf '%s' "$RESPONSE" | jq -r '.data.url' | sed 's|tmpfiles.org/|tmpfiles.org/dl/|')
+          echo "Artifact uploaded to: $URL"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          if gh release view "$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $VERSION exists. Updating assets..."
+            gh release upload "$VERSION" "$ZIP_NAME" --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            echo "Creating new release $VERSION..."
+            gh release create "$VERSION" "$ZIP_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "OpenWrt Firmware $VERSION"
+          fi
