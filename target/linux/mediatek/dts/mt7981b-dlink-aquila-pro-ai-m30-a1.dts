@@ -131,6 +131,11 @@
 	};
 };
 
+&sgmiisys0 {
+	/* SerDes RX/TX polarity swap for the MT7531 CPU port */
+	mediatek,pnswap;
+};
+
 &spi0 {
 	pinctrl-names = "default";
 	pinctrl-0 = <&spi0_flash_pins>;
